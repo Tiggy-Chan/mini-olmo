@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project specific - large files
+checkpoints/
+checkpoints_*/
+data/raw/
+data/tokenized/
+*.pt
+
+# Keep tokenizer config but not the trained file
+tokenizer/tokenizer.json
+
+# Logs
+*.log
+wandb/
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+
+# Reference repos (cloned for documentation)
+docs/OLMo/
+docs/OLMo-core/
+docs/dolma/
