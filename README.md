@@ -1,107 +1,256 @@
-# mini-OLMo
+# mini-OLMo V1
 
-从零实现一个简化版 OLMo，在单卡 8GB GPU 上完整跑通：数据处理 → tokenizer → 模型定义 → 预训练 → 推理 的全流程。
+中文优先的小参数语言模型实验仓库，目标是在单张 `RTX 4060 Laptop 8GB` 上跑通：
 
-## 模型架构
+`中文语料准备 -> 中文 tokenizer -> 中文预训练 -> 中文 SFT -> 中文 chat`
 
-Decoder-only Transformer（GPT 风格），特点：
-- Pre-norm（LayerNorm 在 attention/MLP 之前）
-- 可学习位置编码
-- 输出头与 token embedding 权重共享
-- 支持 v1（26M）、v2（55M）、v3（100M）三种规模
+当前仓库已经不再维护旧的英文 `Wikitext / corpus_v2` 路线，默认入口全部对齐到“中文优先 V1”。
+
+## V1 范围
+
+- 以中文为主，不追求多语言平衡
+- 先做中文 base model，再考虑后续中文 SFT
+- 优先保证数据、tokenizer、训练入口和推理入口一致
+- 在 8GB 显存约束下，优先高频迭代和结果可解释性
+
+当前已实现：
+
+- 中文语料准备脚本
+- 中文 tokenizer 训练脚本
+- 预训练脚本支持自定义 tokenizer 与词表大小
+- 中文 SFT 数据准备脚本
+- 中文 SFT 训练脚本
+- 推理脚本支持指定中文 tokenizer
+- 中文 chat 入口
+- 中文 V1 开发方案文档
+
+当前未实现：
+
+- 更系统的中文评测基准
+- 更系统的多轮 chat 评测与拒答对齐
+- 更强的阶段二数据质量打分
 
 ## 目录结构
 
+```text
+├── docs/
+│   ├── CHINESE_V1_PLAN.md
+│   └── PROJECT_ROADMAP.md
+├── scripts/
+│   ├── prepare_corpus_zh_v1.py
+│   ├── train_tokenizer_zh.py
+│   ├── pretrain.py
+│   ├── prepare_sft_zh.py
+│   ├── sft.py
+│   ├── generate.py
+│   └── chat.py
+├── src/mini_olmo/
+│   ├── data/
+│   └── models/
+├── tokenizer/
+└── data/
 ```
-├── src/mini_olmo/       # 核心库（模型、数据管道）
-├── scripts/             # 训练、生成、数据准备脚本
-├── tokenizer/           # BPE 分词器
-├── data/                # 原始和处理后的数据
-├── checkpoints/         # 模型检查点
-└── docs/                # 项目文档和路线图
+
+## 环境安装
+
+```bash
+pip install -r requirements.txt
 ```
+
+建议：
+
+- Python `3.10+`
+- GPU 训练使用与你 CUDA 版本匹配的 PyTorch
+- 仓库根目录直接运行脚本即可，不需要手工配置 `PYTHONPATH`
 
 ## 快速开始
 
-### 1. 环境安装
+### 1. 准备中文语料
 
 ```bash
-# Python 3.10+
-pip install -r requirements.txt
-
-# PyTorch GPU 版本建议根据 CUDA 版本单独安装
-# https://pytorch.org/get-started/locally/
+conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
+  --corpus-name zh_corpus_v1 \
+  --include-fineweb \
+  --fineweb-data-dir 4_5 \
+  --max-wikipedia-docs 100000 \
+  --max-fineweb-docs 80000 \
+  --extra-text-dir /path/to/your/chinese_texts
 ```
 
-### 2. 准备数据
+说明：
+
+- 默认会抽样中文 Wikipedia
+- `--include-fineweb` 会加入中文 FineWeb Edu 高分桶抽样
+- `--fineweb-data-dir 4_5` 表示优先使用高质量 `4_5` 分桶
+- `--extra-text-dir` 可以多次传入本地中文文本目录
+- 输出落到 `data/raw/zh_corpus_v1/{train,validation,test}.txt`
+
+主力扩展版 `20GB` 纯顶级语料构建：
 
 ```bash
-# Wikitext
-python scripts/prepare_wikitext.py
-
-# 扩展语料（Wikitext + Wikipedia）
-python scripts/prepare_corpus_v2.py
+conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
+  --corpus-name zh_corpus_v3_elite_20gb \
+  --target-size-gb 20 \
+  --dedupe-backend sqlite \
+  --include-fineweb \
+  --fineweb-data-dir 4_5 \
+  --max-wikipedia-docs 3000000 \
+  --max-fineweb-docs 6000000 \
+  --min-chars 100 \
+  --max-chars 3000 \
+  --min-cjk-ratio 0.75 \
+  --log-interval 50000
 ```
 
-### 3. 训练 tokenizer
+说明：
+
+- 这条命令面向 `5GB-20GB+` 的中文预训练扩展语料
+- 会在 `data/raw/zh_corpus_v3_elite_20gb/` 下落盘，并自动在达到 `20GiB` 后停止
+- `sqlite` 去重适合大语料，避免把所有摘要哈希放进内存
+- 这里默认只使用 `Wikipedia + FineWeb Edu Chinese 4_5`
+- 不再默认使用 `Cosmopedia`
+- 不再默认使用 `FineWeb 3_4 / 2_3`
+- 如果这套仍然达不到你要的最终质量标准，下一步应该补充你自己筛过的中文精选文本，而不是放宽桶位
+
+### 2. 训练中文 tokenizer
+
+快速验证版：
 
 ```bash
-python tokenizer/train_tokenizer.py
+conda run -n mini-olmo python scripts/train_tokenizer_zh.py \
+  --corpus-name zh_corpus_v1 \
+  --vocab-size 16000 \
+  --output-path tokenizer/tokenizer_zh_v1.json
 ```
 
-### 4. 预训练
+说明：
+
+- `zh_corpus_v1` 仍然是默认的小规模 tokenizer / smoke 语料
+- 默认词表大小是 `16k`
+- 输出路径默认是 `tokenizer/tokenizer_zh_v1.json`
+- 脚本会打印几条中文 prompt 的编码预览
+- 当前不建议直接拿 `20GiB` 级主语料全量训练 tokenizer，应该先从主语料中抽一个代表性子集再训
+
+### 3. 预训练中文 base model
+
+快速验证：
 
 ```bash
-# v1 小模型（26M，快速验证）
-python scripts/pretrain.py --model-size v1 --total-steps 1000
-
-# v3 完整训练（100M，约 1 天）
-python scripts/pretrain.py \
-    --model-size v3 \
-    --corpus-name corpus_v2 \
-    --batch-size 2 \
-    --grad-accum-steps 12 \
-    --total-steps 80000
+conda run -n mini-olmo python scripts/pretrain.py \
+  --model-size v2-cn \
+  --corpus-name zh_corpus_v1 \
+  --tokenizer-path tokenizer/tokenizer_zh_v1.json \
+  --batch-size 2 \
+  --grad-accum-steps 8 \
+  --total-steps 2000
 ```
 
-### 5. 生成文本
+主力训练：
 
 ```bash
-python scripts/generate.py \
-    --ckpt-path checkpoints/step_80000.pt \
-    --prompt "The history of artificial intelligence" \
-    --max-new-tokens 100 \
-    --temperature 0.8
+conda run -n mini-olmo python scripts/pretrain.py \
+  --model-size v3-cn \
+  --corpus-name zh_corpus_v3_elite_20gb \
+  --tokenizer-path tokenizer/tokenizer_zh_v1.json \
+  --batch-size 2 \
+  --grad-accum-steps 12 \
+  --total-steps 80000 \
+  --lr 3e-4 \
+  --warmup-steps 2000
 ```
 
-## 模型配置
+关键点：
 
-| 版本 | 参数量 | 层数 | 维度 | 注意力头 | FFN 维度 |
-|------|--------|------|------|----------|----------|
-| v1   | ~26M   | 8    | 384  | 6        | 1536     |
-| v2   | ~55M   | 12   | 512  | 8        | 2048     |
-| v3   | ~100M  | 16   | 640  | 10       | 2560     |
+- `pretrain.py` 会根据 tokenizer 的真实词表大小自动构建模型
+- 缓存 token ids 时会带上 tokenizer 名称，避免不同 tokenizer 共享旧缓存
+- `v1-cn / v2-cn / v3-cn` 目前对应同一套模型档位，只是对外统一成中文 V1 命名
+- 当前大语料准备脚本还不支持断点续跑；如果中途中断，不能直接原样重跑接着下
 
-## 硬件要求
-
-- GPU：8GB 显存（如 RTX 4060）
-- v3 训练配置：batch_size=2, grad_accum_steps=12, seq_len=512
-
-## 预训练权重
-
-模型权重托管在 Hugging Face Hub：
+### 4. 中文生成
 
 ```bash
-# 安装 huggingface_hub
-pip install huggingface_hub
-
-# 下载权重
-from huggingface_hub import hf_hub_download
-hf_hub_download(repo_id="YOUR_USERNAME/mini-olmo", filename="checkpoints/v3_step_200000.pt")
+conda run -n mini-olmo python scripts/generate.py \
+  --ckpt-path checkpoints/step_80000.pt \
+  --tokenizer-path tokenizer/tokenizer_zh_v1.json \
+  --prompt "你好，请介绍一下你自己。" \
+  --max-new-tokens 120 \
+  --temperature 0.8 \
+  --top-k 40
 ```
 
-或手动下载：https://huggingface.co/YOUR_USERNAME/mini-olmo
+### 5. 准备第二阶段中文聊天数据
 
-## 项目进展
+```bash
+conda run -n mini-olmo python scripts/prepare_sft_zh.py \
+  --dataset-name zh_sft_stage2_v1 \
+  --recipe chat_v1 \
+  --input-path /path/to/your/high_quality_chat_data
+```
 
-详见 [docs/PROJECT_ROADMAP.md](docs/PROJECT_ROADMAP.md)
+说明：
+
+- 默认会加入一小批内置中文种子样本，便于流程稳定启动
+- `--recipe chat_v1` 会直接抽样公开中文指令数据，当前默认配方是：
+  - `BelleGroup/train_1M_CN`
+  - `FreedomIntelligence/alpaca-gpt4-chinese`
+- 支持 `messages`、`instruction/output`、`question/answer`、`prompt/response`、`conversations`、带 `history` 的指令格式
+- 会做中文占比、长度、轮数、重复样本和常见 AI boilerplate 过滤
+- 输出落到 `data/sft/zh_sft_stage2_v1/{train,validation,test}.jsonl`
+
+### 6. 在中文 base checkpoint 上做 SFT
+
+```bash
+conda run -n mini-olmo python scripts/sft.py \
+  --base-ckpt-path checkpoints/step_80000.pt \
+  --tokenizer-path tokenizer/tokenizer_zh_v1.json \
+  --dataset-name zh_sft_stage2_v1 \
+  --batch-size 2 \
+  --grad-accum-steps 4 \
+  --epochs 1
+```
+
+### 7. 使用 chat 模板做中文对话
+
+```bash
+conda run -n mini-olmo python scripts/chat.py \
+  --ckpt-path checkpoints_sft/sft_step_100.pt \
+  --tokenizer-path tokenizer/tokenizer_zh_v1.json \
+  --user-prompt "你好，请简单介绍一下你自己。"
+```
+
+## 模型档位
+
+| 档位 | 命令参数 | 典型规模 | 用途 |
+|------|----------|----------|------|
+| 小型 | `v1-cn` | ~20M-30M | 冒烟测试、快速排错 |
+| 中型 | `v2-cn` | ~50M-60M | 中文 V1 快速验证 |
+| 主力 | `v3-cn` | ~90M-110M | 中文 V1 主训练 |
+
+说明：
+
+- 实际参数量会随 tokenizer 词表大小变化
+- 当前默认序列长度是 `512`
+- 默认建议中文语料占比 `95%+`
+- 阶段二默认目标是先做出“回答清楚、口吻像助手”的中文 SFT 版，再继续补更复杂的多轮能力
+
+## 当前设计原则
+
+- 默认目标不是“智能涌现”，而是“基本清晰的中文生成与问答”
+- 先把中文 tokenizer 和中文 base model 训顺，再进入 SFT
+- 优先少量高质量中文数据，而不是一开始追求超大规模脏数据
+- 先保证命令入口、默认参数、文档叙事完全一致
+
+## 文档
+
+- 开发方案见 [docs/CHINESE_V1_PLAN.md](docs/CHINESE_V1_PLAN.md)
+- 简版路线图见 [docs/PROJECT_ROADMAP.md](docs/PROJECT_ROADMAP.md)
+
+## 当前状态
+
+- 仓库基线已经对齐到中文 V1
+- 旧英文实验路线和参考仓库内容已移出主流程
+- 中文 base model、SFT 和 chat 三段入口已经具备
+
+## 许可证
+
+本项目代码采用 MIT 许可证。

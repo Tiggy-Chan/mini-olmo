@@ -5,8 +5,9 @@ from dataclasses import dataclass
 class MiniOlmoConfig:
     """mini-OLMo 模型的超参数配置。
 
-    这一版是针对单张 8GB GPU 设计的约 20M 参数模型，
-    以 Wikitext 预训练为主要目标。
+    当前仓库基线是中文优先 V1。
+    默认配置用于单张 8GB GPU 上的小模型冒烟测试，
+    更大的实验档位由训练脚本在运行时覆盖。
     """
 
     # vocab & 位置

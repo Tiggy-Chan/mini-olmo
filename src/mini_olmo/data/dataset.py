@@ -20,26 +20,47 @@ def get_project_root() -> str:
     return path
 
 
-def _get_tokenizer() -> Tokenizer:
-    """加载我们之前训练好的 tokenizer。"""
+def _resolve_tokenizer_path(tokenizer_path: str | None = None) -> str:
     root = get_project_root()
-    tok_path = os.path.join(root, "tokenizer", "tokenizer.json")
+    if tokenizer_path is None:
+        zh_path = os.path.join(root, "tokenizer", "tokenizer_zh_v1.json")
+        legacy_path = os.path.join(root, "tokenizer", "tokenizer.json")
+        tok_path = zh_path if os.path.exists(zh_path) else legacy_path
+    elif os.path.isabs(tokenizer_path):
+        tok_path = tokenizer_path
+    else:
+        tok_path = os.path.join(root, tokenizer_path)
+    return os.path.abspath(tok_path)
+
+
+def _tokenizer_cache_suffix(tokenizer_path: str | None = None) -> str:
+    tok_path = _resolve_tokenizer_path(tokenizer_path)
+    stem = os.path.splitext(os.path.basename(tok_path))[0]
+    if stem == "tokenizer":
+        return ""
+    return f"__{stem}"
+
+
+def _get_tokenizer(tokenizer_path: str | None = None) -> Tokenizer:
+    """加载训练好的 tokenizer。"""
+    tok_path = _resolve_tokenizer_path(tokenizer_path)
     if not os.path.exists(tok_path):
         raise FileNotFoundError(
-            f"未找到 tokenizer 文件: {tok_path}，请先运行 tokenizer/train_tokenizer.py。"
+            f"未找到 tokenizer 文件: {tok_path}，请先运行 scripts/train_tokenizer_zh.py。"
         )
     return Tokenizer.from_file(tok_path)
 
 
-def _get_cache_path(split: Split, corpus_name: str) -> str:
+def _get_cache_path(split: Split, corpus_name: str, tokenizer_path: str | None = None) -> str:
     root = get_project_root()
     cache_dir = os.path.join(root, "data", "tokenized")
     os.makedirs(cache_dir, exist_ok=True)
+    suffix = _tokenizer_cache_suffix(tokenizer_path)
     if corpus_name == "wikitext":
-        return os.path.join(cache_dir, f"wikitext_{split}_ids.pt")
+        return os.path.join(cache_dir, f"wikitext_{split}{suffix}_ids.pt")
     corpus_dir = os.path.join(cache_dir, corpus_name)
     os.makedirs(corpus_dir, exist_ok=True)
-    return os.path.join(corpus_dir, f"{corpus_name}_{split}_ids.pt")
+    return os.path.join(corpus_dir, f"{corpus_name}_{split}{suffix}_ids.pt")
 
 
 def _get_raw_text_path(split: Split, corpus_name: str) -> str:
@@ -49,14 +70,18 @@ def _get_raw_text_path(split: Split, corpus_name: str) -> str:
     return os.path.join(root, "data", "raw", corpus_name, f"{split}.txt")
 
 
-def build_or_load_token_ids(split: Split, corpus_name: str = "wikitext") -> torch.Tensor:
+def build_or_load_token_ids(
+    split: Split,
+    corpus_name: str = "zh_corpus_v3_elite_20gb",
+    tokenizer_path: str | None = None,
+) -> torch.Tensor:
     """为给定 split 构建或加载一维 token id 序列。
 
-    - 优先从 data/tokenized/wikitext_{split}_ids.pt 加载
-    - 如果不存在，则从 data/raw/wikitext/{split}.txt 读取文本，
+    - 优先从 data/tokenized/<corpus_name>/*.pt 加载
+    - 如果不存在，则从 data/raw/<corpus_name>/{split}.txt 读取文本，
       使用 tokenizer 编码，并缓存到上述路径。
     """
-    cache_path = _get_cache_path(split, corpus_name)
+    cache_path = _get_cache_path(split, corpus_name, tokenizer_path=tokenizer_path)
     if os.path.exists(cache_path):
         return torch.load(cache_path)
 
@@ -64,7 +89,7 @@ def build_or_load_token_ids(split: Split, corpus_name: str = "wikitext") -> torc
     if not os.path.exists(text_path):
         raise FileNotFoundError(f"未找到原始文本: {text_path}。")
 
-    tokenizer = _get_tokenizer()
+    tokenizer = _get_tokenizer(tokenizer_path=tokenizer_path)
     eos_id = tokenizer.token_to_id("<eos>")
 
     all_ids: Iterable[int] = []
@@ -101,18 +126,24 @@ class LMDataset(Dataset):
         split: Split,
         config: MiniOlmoConfig,
         seq_len: int | None = None,
-        corpus_name: str = "wikitext",
+        corpus_name: str = "zh_corpus_v3_elite_20gb",
+        tokenizer_path: str | None = None,
     ) -> None:
         super().__init__()
         self.split = split
         self.config = config
         self.seq_len = seq_len or config.max_seq_len
         self.corpus_name = corpus_name
+        self.tokenizer_path = tokenizer_path
 
         if self.seq_len > config.max_seq_len:
             raise ValueError(f"seq_len={self.seq_len} 不应超过 config.max_seq_len={config.max_seq_len}")
 
-        token_ids = build_or_load_token_ids(split, corpus_name=corpus_name)
+        token_ids = build_or_load_token_ids(
+            split,
+            corpus_name=corpus_name,
+            tokenizer_path=tokenizer_path,
+        )
         # 为了构造 (input, label) 对，每个样本需要 seq_len+1 个 token
         num_tokens = token_ids.numel()
         self.num_sequences = (num_tokens - 1) // self.seq_len
@@ -142,10 +173,16 @@ def create_dataloader(
     batch_size: int,
     shuffle: bool = True,
     num_workers: int = 0,
-    corpus_name: str = "wikitext",
+    corpus_name: str = "zh_corpus_v3_elite_20gb",
+    tokenizer_path: str | None = None,
 ) -> DataLoader:
     """创建用于训练/验证的 DataLoader。"""
-    dataset = LMDataset(split, config, corpus_name=corpus_name)
+    dataset = LMDataset(
+        split,
+        config,
+        corpus_name=corpus_name,
+        tokenizer_path=tokenizer_path,
+    )
     return DataLoader(
         dataset,
         batch_size=batch_size,

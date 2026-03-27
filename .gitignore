@@ -28,11 +28,13 @@ env/
 checkpoints/
 checkpoints_*/
 data/raw/
+data/sft/
 data/tokenized/
 *.pt
 
 # Keep tokenizer config but not the trained file
 tokenizer/tokenizer.json
+tokenizer/tokenizer_*.json
 
 # Logs
 *.log
@@ -42,9 +44,3 @@ runs/
 # OS
 .DS_Store
 Thumbs.db
-
-
-# Reference repos (cloned for documentation)
-docs/OLMo/
-docs/OLMo-core/
-docs/dolma/

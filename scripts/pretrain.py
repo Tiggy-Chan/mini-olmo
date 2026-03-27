@@ -1,12 +1,19 @@
 import math
 import os
 import time
+import sys
 import argparse
 from typing import Dict
 
 import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
+from tokenizers import Tokenizer
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(PROJECT_ROOT, "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
 
 from mini_olmo.models.config import MiniOlmoConfig
 from mini_olmo.models.transformer import MiniOlmoModel
@@ -14,7 +21,7 @@ from mini_olmo.data.dataset import create_dataloader
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Pretrain mini-OLMo on Wikitext")
+    parser = argparse.ArgumentParser(description="Pretrain mini-OLMo Chinese-first V1")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--total-steps", type=int, default=1000)
     parser.add_argument("--grad-accum-steps", type=int, default=2)
@@ -27,12 +34,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-interval", type=int, default=500)
     parser.add_argument("--output-dir", type=str, default="checkpoints")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--corpus-name", type=str, default="wikitext")
+    parser.add_argument("--corpus-name", type=str, default="zh_corpus_v3_elite_20gb")
+    parser.add_argument("--tokenizer-path", type=str, default="tokenizer/tokenizer_zh_v1.json")
     parser.add_argument(
         "--model-size",
         type=str,
-        default="v1",
-        choices=["v1", "v2", "v3"],
+        default="v3-cn",
+        choices=["v1", "v2", "v3", "v1-cn", "v2-cn", "v3-cn"],
     )
     return parser.parse_args()
 
@@ -52,6 +60,29 @@ def update_lr(optimizer: torch.optim.Optimizer, base_lr: float, step: int, total
     for group in optimizer.param_groups:
         group["lr"] = lr
     return lr
+
+
+def get_project_root() -> str:
+    return PROJECT_ROOT
+
+
+def resolve_tokenizer_path(tokenizer_path: str) -> str:
+    if os.path.isabs(tokenizer_path):
+        return tokenizer_path
+    return os.path.join(get_project_root(), tokenizer_path)
+
+
+def load_tokenizer(tokenizer_path: str) -> Tokenizer:
+    abs_path = resolve_tokenizer_path(tokenizer_path)
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"未找到 tokenizer 文件: {abs_path}")
+    return Tokenizer.from_file(abs_path)
+
+
+def normalize_model_size(model_size: str) -> str:
+    if model_size.endswith("-cn"):
+        return model_size[:-3]
+    return model_size
 
 
 def save_checkpoint(
@@ -108,11 +139,18 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[mini-olmo] 使用设备: {device}")
 
-    if args.model_size == "v1":
-        config = MiniOlmoConfig()
-    elif args.model_size == "v2":
+    tokenizer = load_tokenizer(args.tokenizer_path)
+    vocab_size = tokenizer.get_vocab_size()
+    model_size = normalize_model_size(args.model_size)
+
+    print(f"[mini-olmo] tokenizer: {resolve_tokenizer_path(args.tokenizer_path)}")
+    print(f"[mini-olmo] tokenizer vocab size: {vocab_size}")
+
+    if model_size == "v1":
+        config = MiniOlmoConfig(vocab_size=vocab_size)
+    elif model_size == "v2":
         config = MiniOlmoConfig(
-            vocab_size=32_000,
+            vocab_size=vocab_size,
             max_seq_len=512,
             n_layer=12,
             d_model=512,
@@ -121,9 +159,9 @@ def main() -> None:
             dropout=0.1,
             attention_dropout=0.1,
         )
-    elif args.model_size == "v3":
+    elif model_size == "v3":
         config = MiniOlmoConfig(
-            vocab_size=32_000,
+            vocab_size=vocab_size,
             max_seq_len=512,
             n_layer=16,
             d_model=640,
@@ -155,6 +193,7 @@ def main() -> None:
         batch_size=args.batch_size,
         shuffle=True,
         corpus_name=args.corpus_name,
+        tokenizer_path=args.tokenizer_path,
     )
     val_loader = create_dataloader(
         "validation",
@@ -162,6 +201,7 @@ def main() -> None:
         batch_size=args.batch_size,
         shuffle=False,
         corpus_name=args.corpus_name,
+        tokenizer_path=args.tokenizer_path,
     )
 
     model.train()

@@ -1,30 +1,40 @@
 import argparse
 import os
+import sys
 from typing import List
 
 import torch
 import torch.nn.functional as F
 from tokenizers import Tokenizer
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(PROJECT_ROOT, "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
 from mini_olmo.models.config import MiniOlmoConfig
 from mini_olmo.models.transformer import MiniOlmoModel
 
 
 def get_project_root() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
+    return PROJECT_ROOT
 
 
-def load_tokenizer() -> Tokenizer:
-    root = get_project_root()
-    tok_path = os.path.join(root, "..", "tokenizer", "tokenizer.json")
-    tok_path = os.path.abspath(tok_path)
+def resolve_tokenizer_path(tokenizer_path: str) -> str:
+    if os.path.isabs(tokenizer_path):
+        return tokenizer_path
+    return os.path.join(get_project_root(), tokenizer_path)
+
+
+def load_tokenizer(tokenizer_path: str) -> Tokenizer:
+    tok_path = resolve_tokenizer_path(tokenizer_path)
     if not os.path.exists(tok_path):
         raise FileNotFoundError(f"未找到 tokenizer 文件: {tok_path}")
     return Tokenizer.from_file(tok_path)
 
 
 def load_model(ckpt_path: str, device: torch.device) -> MiniOlmoModel:
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     cfg_dict = ckpt.get("config")
     if cfg_dict is not None:
         config = MiniOlmoConfig(**cfg_dict)
@@ -89,9 +99,10 @@ def generate(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate text from mini-OLMo checkpoint")
+    parser = argparse.ArgumentParser(description="Generate Chinese text from a mini-OLMo V1 checkpoint")
     parser.add_argument("--ckpt-path", type=str, required=True)
-    parser.add_argument("--prompt", type=str, default="Hello, this is mini-OLMo.")
+    parser.add_argument("--tokenizer-path", type=str, default="tokenizer/tokenizer_zh_v1.json")
+    parser.add_argument("--prompt", type=str, default="你好，请介绍一下你自己。")
     parser.add_argument("--max-new-tokens", type=int, default=50)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=50)
@@ -104,7 +115,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[mini-olmo] 使用设备: {device}")
 
-    tokenizer = load_tokenizer()
+    tokenizer = load_tokenizer(args.tokenizer_path)
     model = load_model(args.ckpt_path, device)
 
     print("[mini-olmo] Prompt:")
