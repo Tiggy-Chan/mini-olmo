@@ -111,6 +111,13 @@ conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
 - 不再默认使用 `Cosmopedia`
 - 不再默认使用 `FineWeb 3_4 / 2_3`
 - 如果这套仍然达不到你要的最终质量标准，下一步应该补充你自己筛过的中文精选文本，而不是放宽桶位
+- 如果看到 `HF Hub` 未认证提示，需要先登录或设置 `HF_TOKEN`
+- PowerShell 临时设置方式：`$env:HF_TOKEN="你的_token"`
+- 断点续跑时加 `--resume`，脚本会追加写入并重建已有语料的去重状态
+- 远程流式数据源遇到瞬时网络错误时，脚本会自动重试；可用 `--source-retries` 和 `--source-retry-delay-seconds` 调整
+- 如果下载链路偏慢，可以先试 `--streaming-buffer-size 1000` 或 `2000`
+- 如果更在意吞吐而不是随机混样，可以加 `--disable-shuffle`
+- 如果磁盘去重成为瓶颈，可以把 `--sqlite-commit-interval` 提高到 `20000` 或更大
 
 ### 2. 训练中文 tokenizer
 
@@ -164,7 +171,7 @@ conda run -n mini-olmo python scripts/pretrain.py \
 - `pretrain.py` 会根据 tokenizer 的真实词表大小自动构建模型
 - 缓存 token ids 时会带上 tokenizer 名称，避免不同 tokenizer 共享旧缓存
 - `v1-cn / v2-cn / v3-cn` 目前对应同一套模型档位，只是对外统一成中文 V1 命名
-- 当前大语料准备脚本还不支持断点续跑；如果中途中断，不能直接原样重跑接着下
+- 当前大语料准备脚本支持 `--resume` 断点续跑；继续时请保持相同的数据筛选参数
 
 ### 4. 中文生成
 
