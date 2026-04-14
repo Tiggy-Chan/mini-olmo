@@ -88,6 +88,17 @@ class DigestStore:
             self._pending = 0
         return cursor.rowcount == 1
 
+    def reset(self) -> None:
+        if self.backend == "memory":
+            assert self._memory_store is not None
+            self._memory_store.clear()
+            return
+
+        assert self._conn is not None
+        self._conn.execute("DELETE FROM digests")
+        self._conn.commit()
+        self._pending = 0
+
     def close(self) -> None:
         if self._conn is not None:
             if self._pending > 0:
@@ -171,6 +182,11 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         action="store_true",
         help="Resume an interrupted build by appending to existing outputs and rebuilding dedupe state.",
+    )
+    parser.add_argument(
+        "--overwrite-existing",
+        action="store_true",
+        help="Delete existing outputs for this corpus_name and rebuild from scratch. Use with care.",
     )
     parser.add_argument(
         "--sqlite-commit-interval",
@@ -568,6 +584,63 @@ def resolve_dedupe_db_path(args: argparse.Namespace, output_dir: str) -> str | N
     return os.path.join(output_dir, "dedupe.sqlite3")
 
 
+def collect_existing_artifact_paths(
+    output_paths: Dict[str, str],
+    state_path: str,
+    stats_path: str,
+    dedupe_db_path: str | None,
+) -> List[str]:
+    candidates = list(output_paths.values()) + [state_path, stats_path]
+    if dedupe_db_path:
+        candidates.extend(
+            [
+                dedupe_db_path,
+                f"{dedupe_db_path}-wal",
+                f"{dedupe_db_path}-shm",
+            ]
+        )
+    return [path for path in candidates if os.path.exists(path)]
+
+
+def clear_existing_artifacts(paths: Sequence[str]) -> None:
+    for path in paths:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def guard_or_reset_existing_outputs(
+    *,
+    args: argparse.Namespace,
+    output_paths: Dict[str, str],
+    state_path: str,
+    stats_path: str,
+    dedupe_db_path: str | None,
+) -> None:
+    existing_paths = collect_existing_artifact_paths(
+        output_paths=output_paths,
+        state_path=state_path,
+        stats_path=stats_path,
+        dedupe_db_path=dedupe_db_path,
+    )
+    if not existing_paths or args.resume:
+        return
+
+    if args.overwrite_existing:
+        print("[mini-olmo] 检测到已有语料产物，按 --overwrite-existing 清理后从头构建。")
+        for path in existing_paths:
+            print(f"  - 删除: {path}")
+        clear_existing_artifacts(existing_paths)
+        return
+
+    details = "\n".join(f"  - {path}" for path in existing_paths[:10])
+    raise ValueError(
+        "检测到当前 corpus_name 已存在历史语料产物；为避免误覆盖，脚本已停止。\n"
+        "如果你是想继续上次中断的构建，请在相同参数上加 `--resume`。\n"
+        "如果你是想丢弃旧结果并从头重建，请显式传 `--overwrite-existing`。\n"
+        f"{details}"
+    )
+
+
 def build_resume_config(
     args: argparse.Namespace,
     dedupe_backend: str,
@@ -771,20 +844,30 @@ def build_run_snapshot(
 def write_corpus(args: argparse.Namespace) -> Dict[str, int]:
     if args.validation_ratio + args.test_ratio >= 1.0:
         raise ValueError("validation_ratio + test_ratio 必须小于 1.0")
+    if args.resume and args.overwrite_existing:
+        raise ValueError("`--resume` 和 `--overwrite-existing` 不能同时使用。")
 
     output_dir = ensure_output_dir(args.corpus_name)
     dedupe_backend = resolve_dedupe_backend(args)
     dedupe_db_path = resolve_dedupe_db_path(args, output_dir)
     target_bytes = int(args.target_size_gb * (1024 ** 3)) if args.target_size_gb > 0 else 0
     state_path = get_resume_state_path(output_dir)
-    previous_state = load_json_if_exists(state_path) if args.resume else None
-    resume_config = build_resume_config(args, dedupe_backend, dedupe_db_path)
-    if args.resume:
-        validate_resume_config(previous_state, resume_config)
+    stats_path = os.path.join(output_dir, "stats.json")
     output_paths = {
         split: os.path.join(output_dir, f"{split}.txt")
         for split in SPLIT_NAMES
     }
+    guard_or_reset_existing_outputs(
+        args=args,
+        output_paths=output_paths,
+        state_path=state_path,
+        stats_path=stats_path,
+        dedupe_db_path=dedupe_db_path,
+    )
+    previous_state = load_json_if_exists(state_path) if args.resume else None
+    resume_config = build_resume_config(args, dedupe_backend, dedupe_db_path)
+    if args.resume:
+        validate_resume_config(previous_state, resume_config)
 
     digest_store = DigestStore(
         dedupe_backend,
@@ -794,6 +877,7 @@ def write_corpus(args: argparse.Namespace) -> Dict[str, int]:
     restored_split_counts = Counter()
     restored_split_bytes = Counter()
     if args.resume:
+        digest_store.reset()
         restored_split_counts, restored_split_bytes = rebuild_digest_store_from_outputs(
             output_paths,
             digest_store,
@@ -950,7 +1034,6 @@ def write_corpus(args: argparse.Namespace) -> Dict[str, int]:
         source_stats_complete=source_stats_complete,
     )
 
-    stats_path = os.path.join(output_dir, "stats.json")
     write_json_atomic(stats_path, stats)
 
     print("[mini-olmo] 中文语料准备完成：")

@@ -102,8 +102,73 @@ conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
   --log-interval 50000
 ```
 
+如果构建中断，需要继续上次任务，请在相同参数上加 `--resume`：
+
+```bash
+conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
+  --corpus-name zh_corpus_v3_elite_20gb \
+  --target-size-gb 20 \
+  --dedupe-backend sqlite \
+  --include-fineweb \
+  --fineweb-data-dir 4_5 \
+  --max-wikipedia-docs 3000000 \
+  --max-fineweb-docs 6000000 \
+  --min-chars 100 \
+  --max-chars 3000 \
+  --min-cjk-ratio 0.75 \
+  --log-interval 50000 \
+  --resume
+```
+
+如果你明确想丢弃旧结果并重新开始，再额外改用 `--overwrite-existing`：
+
+```bash
+conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
+  --corpus-name zh_corpus_v3_elite_20gb \
+  --target-size-gb 20 \
+  --dedupe-backend sqlite \
+  --include-fineweb \
+  --fineweb-data-dir 4_5 \
+  --max-wikipedia-docs 3000000 \
+  --max-fineweb-docs 6000000 \
+  --min-chars 100 \
+  --max-chars 3000 \
+  --min-cjk-ratio 0.75 \
+  --log-interval 50000 \
+  --overwrite-existing
+```
+
+国内友好的语料下载入口：
+
+如果你希望优先走 `ModelScope / 国内友好源`，先把原始语料下载到本地，再自行转成 `txt/jsonl` 后通过 `--extra-text-dir` 接入，可以用新增脚本：
+
+```bash
+conda run -n mini-olmo pip install modelscope
+
+conda run -n mini-olmo python scripts/prepare_corpus_zh_cn_modelscope.py --list
+
+conda run -n mini-olmo python scripts/prepare_corpus_zh_cn_modelscope.py \
+  --preset elite_cn \
+  --output-root data/downloads/zh_corpora
+
+conda run -n mini-olmo python scripts/prepare_corpus_zh_cn_modelscope.py \
+  --preset elite_cn_plus_web \
+  --dry-run
+
+conda run -n mini-olmo python scripts/export_modelscope_parquet_to_jsonl.py \
+  --input-dir data/downloads/zh_corpora/chinese_cosmopedia/data \
+  --output-dir data/local/chinese_cosmopedia_jsonl \
+  --max-files 17
+```
+
 说明：
 
+- 默认 `elite_cn` 现在只下载 `Chinese Cosmopedia` 的约 `19-20GiB` 子集，更适合单机做低参数中文小模型起步
+- `elite_cn_plus_web` 会继续叠加 `CCI3`，体量会明显变大；磁盘不宽裕时先不要直接跑
+- `scripts/prepare_corpus_zh_cn_modelscope.py` 默认会把 `ModelScope` 并发压到 `2`，避免全量并发把磁盘瞬间写爆
+- 下载完成后，可以用 `scripts/export_modelscope_parquet_to_jsonl.py` 把本地 parquet 导成兼容 `--extra-text-dir` 的 jsonl 目录
+- 如果你只是想先做一个“中文续写 + 后续再 SFT 成聊天模型”的小实验，优先从 `elite_cn` 起步就够了
+- 想让小模型“顺畅聊天”，不能只靠预训练语料，后面还需要再接一轮高质量中文 SFT
 - 这条命令面向 `5GB-20GB+` 的中文预训练扩展语料
 - 会在 `data/raw/zh_corpus_v3_elite_20gb/` 下落盘，并自动在达到 `20GiB` 后停止
 - `sqlite` 去重适合大语料，避免把所有摘要哈希放进内存
@@ -114,10 +179,12 @@ conda run -n mini-olmo python scripts/prepare_corpus_zh_v1.py \
 - 如果看到 `HF Hub` 未认证提示，需要先登录或设置 `HF_TOKEN`
 - PowerShell 临时设置方式：`$env:HF_TOKEN="你的_token"`
 - 断点续跑时加 `--resume`，脚本会追加写入并重建已有语料的去重状态
+- 如果检测到当前 `corpus_name` 已有旧语料产物，脚本现在会默认拒绝直接覆盖，避免误删；想从头重建时请显式传 `--overwrite-existing`
 - 远程流式数据源遇到瞬时网络错误时，脚本会自动重试；可用 `--source-retries` 和 `--source-retry-delay-seconds` 调整
 - 如果下载链路偏慢，可以先试 `--streaming-buffer-size 1000` 或 `2000`
 - 如果更在意吞吐而不是随机混样，可以加 `--disable-shuffle`
 - 如果磁盘去重成为瓶颈，可以把 `--sqlite-commit-interval` 提高到 `20000` 或更大
+- `scripts/prepare_corpus_zh_cn_modelscope.py` 会优先列出 `Chinese Cosmopedia / CCI3 / CCI4` 这些更适合国内网络环境的入口；`Wikipedia / Wikisource` 只在显式混合预设里启用
 
 ### 2. 训练中文 tokenizer
 
